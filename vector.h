@@ -21,16 +21,17 @@ public:
         capacity_(capacity) {
     }
 
-    ~RawMemory() {
-        Deallocate(buffer_);
-    }
-    /////_СOPY & ASSIGN_/////////////////////////////////////
     RawMemory(const RawMemory& other) = delete;
-    RawMemory& operator=(const RawMemory& rhs) = delete;
-
     RawMemory(RawMemory&& other) noexcept {
         Swap(other);
     }
+
+    ~RawMemory() {
+        Deallocate(buffer_);
+    }
+    /////_СOPY & ASSIGN FOR EQUAL_/////////////////////////////////////
+    
+    RawMemory& operator=(const RawMemory& rhs) = delete;    
     RawMemory& operator=(RawMemory&& rhs) noexcept {
         if (buffer_ != nullptr) {
             Deallocate(buffer_);
@@ -157,29 +158,20 @@ public:
                 Swap(rhs_copy);
             }
             else { // another vector is LESS
-                if (size_ > rhs.size_) {
-                    size_t i = 0;
-                    for (; i != rhs.size_; ++i) {
-                        data_[i] = rhs[i]; // assign values from RHS to THIS
-                    }
-                    std::destroy_n(data_.GetAddress() + i, size_ - rhs.size_); // free unused elements
+                std::copy_n(rhs.begin(), std::min(size_, rhs.size_), begin());
+                if (size_ > rhs.size_) {  
+                    std::destroy_n(data_.GetAddress() + rhs.size_, size_ - rhs.size_); // free unused elements
                 }
-                else {
-                    size_t i = 0;
-                    for (; i != size_; ++i) {
-                        data_[i] = rhs[i]; // assign values from RHS to THIS
-                    }
-                    std::uninitialized_copy_n(rhs.data_.GetAddress() + i, rhs.size_ - size_, data_.GetAddress() + i); // copy elements with memory initialization in range [size_ + 1, rhs.size_)
+                else { 
+                    std::uninitialized_copy_n(rhs.data_.GetAddress() + size_, rhs.size_ - size_, data_.GetAddress() + size_); // copy elements with memory initialization in range [size_ + 1, rhs.size_)
                 }
                 size_ = rhs.size_;
             }
         }
         return *this;
     }
-    Vector& operator=(Vector&& rhs) noexcept {
-        if (this != &rhs) {
-            Swap(rhs);
-        }
+    Vector& operator=(Vector&& rhs) noexcept {        
+        Swap(rhs);        
         return *this;
     }
 
@@ -206,12 +198,7 @@ public:
             return;
         }
         RawMemory<T> new_data(new_capacity); // new heap creation
-        if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>) { // move or copy old values to new heap
-            std::uninitialized_move_n(data_.GetAddress(), size_, new_data.GetAddress());
-        }
-        else {
-            std::uninitialized_copy_n(data_.GetAddress(), size_, new_data.GetAddress());
-        }
+        TransferDataToNewHeap(data_.GetAddress(), size_, new_data.GetAddress());
         std::destroy_n(data_.GetAddress(), size_); // destroy old values in heap
         data_.Swap(new_data);
     }
@@ -237,12 +224,7 @@ public:
         if (size_ == data_.Capacity()) {
             RawMemory<T> new_data(size_ == 0 ? 1 : size_ * 2);
             new (new_data.GetAddress() + size_) T(std::forward<Args>(args)...);
-            if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>) {
-                std::uninitialized_move_n(data_.GetAddress(), size_, new_data.GetAddress());
-            }
-            else {
-                std::uninitialized_copy_n(data_.GetAddress(), size_, new_data.GetAddress());
-            }
+            TransferDataToNewHeap(data_.GetAddress(), size_, new_data.GetAddress());
             std::destroy_n(data_.GetAddress(), size_);
             data_.Swap(new_data);
         }
@@ -260,10 +242,9 @@ public:
     }
 
     void PopBack() noexcept {
-        if (size_ > 0) {
-            std::destroy_at(data_.GetAddress() + size_ - 1);
-            --size_;
-        }
+        assert(size_ > 0);        
+        std::destroy_at(data_.GetAddress() + size_ - 1);
+        --size_;       
     }
 
     //////////_ANY POS OF ELEMENT_//////////////////////////////////////////////////////
@@ -273,18 +254,12 @@ public:
         if (this->cend() == pos) { // if pos point to hte end of vector
             EmplaceBack(std::forward<Args>(args)...);
         }
-        else if (size_ == data_.Capacity()) { // need new heap
-            size_t dist_to_end = std::distance(pos, cend()); // qty of leemnts after desired pos
+        else if (size_ == data_.Capacity()) { // need new heap            
             RawMemory<T> new_data(size_ == 0 ? 1 : size_ * 2);
             new (new_data.GetAddress() + pos_count) T(std::forward<Args>(args)...); // create new value in heap
-            if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>) {
-                std::uninitialized_move_n(data_.GetAddress(), pos_count, new_data.GetAddress()); // move elements before pos
-                std::uninitialized_move_n(data_.GetAddress() + pos_count, dist_to_end, new_data.GetAddress() + pos_count + 1); // move elements after pos
-            }
-            else {
-                std::uninitialized_copy_n(data_.GetAddress(), pos_count, new_data.GetAddress()); // copy elements before pos
-                std::uninitialized_copy_n(data_.GetAddress() + pos_count, dist_to_end, new_data.GetAddress() + pos_count + 1); // copy elements after pos
-            }
+            TransferDataToNewHeap(data_.GetAddress(), pos_count, new_data.GetAddress());
+            size_t dist_to_end = std::distance(pos, cend()); // qty of leemnts after desired pos
+            TransferDataToNewHeap(data_.GetAddress() + pos_count, dist_to_end, new_data.GetAddress() + pos_count + 1);
             std::destroy_n(data_.GetAddress(), size_);
             data_.Swap(new_data);
             ++size_;
@@ -328,4 +303,13 @@ public:
 private:
     RawMemory<T> data_;
     size_t size_ = 0;
+
+    void TransferDataToNewHeap(iterator src, size_t size, iterator dst) {
+        if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>) { // move or copy old values to new heap
+            std::uninitialized_move_n(src, size, dst);
+        }
+        else {
+            std::uninitialized_copy_n(src, size, dst);
+        }
+    }
 };
